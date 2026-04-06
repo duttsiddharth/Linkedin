@@ -18,7 +18,7 @@ log = logging.getLogger(__name__)
 
 # ── Clients ───────────────────────────────────────────────────
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-gemini = genai.GenerativeModel("gemini-1.5-flash")  # free tier
+gemini = genai.GenerativeModel("gemini-2.0-flash")  # free tier
 
 supabase: Client = create_client(
     os.getenv("SUPABASE_URL"),

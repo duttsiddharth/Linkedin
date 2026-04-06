@@ -1,0 +1,316 @@
+{
+  "name": "LinkedIn AI Ghostwriter — Full Pipeline",
+  "nodes": [
+    {
+      "id": "1-schedule",
+      "name": "Daily Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [200, 300],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8 * * 1-5"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "2-fetch-topics",
+      "name": "Fetch Trending Topics (HN)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [420, 300],
+      "parameters": {
+        "method": "GET",
+        "url": "https://hn.algolia.com/api/v1/search?tags=front_page&hitsPerPage=5",
+        "options": {}
+      }
+    },
+    {
+      "id": "3-pick-topic",
+      "name": "Pick Best Topic",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [640, 300],
+      "parameters": {
+        "jsCode": "// Pick the top Hacker News story title as today's topic\nconst hits = $input.all()[0].json.hits;\nif (!hits || hits.length === 0) {\n  throw new Error('No topics returned from HN API');\n}\nconst topic = hits[0].title;\nconsole.log('Selected topic:', topic);\nreturn [{ json: { topic } }];"
+      }
+    },
+    {
+      "id": "4-generate-post",
+      "name": "Generate LinkedIn Post",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [860, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.API_BASE_URL }}/generate",
+        "sendBody": true,
+        "bodyContentType": "json",
+        "body": {
+          "topic": "={{ $json.topic }}",
+          "niche": "AI & Technology",
+          "tone": "bold, insightful, slightly controversial"
+        },
+        "options": {
+          "timeout": 30000
+        }
+      }
+    },
+    {
+      "id": "5-check-duplicate",
+      "name": "Was it a Duplicate?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1080, 300],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "dup-check",
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "pending",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "6-store-db",
+      "name": "Log to Google Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [1300, 220],
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": "={{ $env.GOOGLE_SHEET_ID }}",
+        "sheetName": "Posts",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "post_id": "={{ $json.post_id }}",
+            "topic": "={{ $json.topic }}",
+            "status": "pending",
+            "created_at": "={{ $now }}"
+          }
+        }
+      }
+    },
+    {
+      "id": "7-send-telegram",
+      "name": "Send to Telegram for Approval",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [1520, 220],
+      "parameters": {
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "text": "=📝 *New LinkedIn Post Ready*\n\n*Topic:* {{ $json.topic }}\n*Post ID:* `{{ $json.post_id }}`\n\n───────────────\n{{ $json.content }}\n───────────────\n\nReply with:\n✅ `/approve_{{ $json.post_id }}`\n❌ `/reject_{{ $json.post_id }}`",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      }
+    },
+    {
+      "id": "8-skip-duplicate",
+      "name": "Skip — Already Used Topic",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1300, 420],
+      "parameters": {}
+    },
+    {
+      "id": "9-approval-webhook",
+      "name": "Approval Webhook (Telegram)",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1,
+      "position": [200, 600],
+      "parameters": {
+        "updates": ["message"]
+      }
+    },
+    {
+      "id": "10-parse-command",
+      "name": "Parse Approve/Reject Command",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [420, 600],
+      "parameters": {
+        "jsCode": "const text = ($input.all()[0].json.message?.text || '').trim();\nconst match = text.match(/^\\/(approve|reject)_([a-f0-9\\-]{36})$/);\nif (!match) {\n  return [{ json: { valid: false, raw: text } }];\n}\nreturn [{ json: { valid: true, command: match[1], post_id: match[2] } }];"
+      }
+    },
+    {
+      "id": "11-is-valid-command",
+      "name": "Is Valid Command?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [640, 600],
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "id": "valid-cmd",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "12-call-approve",
+      "name": "Call Approve Endpoint",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [860, 520],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.API_BASE_URL }}/approve",
+        "sendBody": true,
+        "bodyContentType": "json",
+        "body": {
+          "post_id": "={{ $json.post_id }}",
+          "approved": "={{ $json.command === 'approve' }}"
+        }
+      }
+    },
+    {
+      "id": "13-is-approved",
+      "name": "Is Approved?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1080, 520],
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "id": "approved-check",
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "approved",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "14-post-linkedin",
+      "name": "Post to LinkedIn",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1300, 440],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.API_BASE_URL }}/post-to-linkedin/{{ $json.post_id }}",
+        "options": {
+          "timeout": 60000
+        }
+      }
+    },
+    {
+      "id": "15-confirm-telegram",
+      "name": "Confirm Post on Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [1520, 440],
+      "parameters": {
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "text": "=✅ Post published to LinkedIn!\nPost ID: `{{ $json.post_id }}`",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      }
+    },
+    {
+      "id": "16-rejected-telegram",
+      "name": "Notify Rejection",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [1300, 620],
+      "parameters": {
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "text": "=❌ Post `{{ $json.post_id }}` rejected and discarded.",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Daily Schedule": {
+      "main": [[{ "node": "Fetch Trending Topics (HN)", "type": "main", "index": 0 }]]
+    },
+    "Fetch Trending Topics (HN)": {
+      "main": [[{ "node": "Pick Best Topic", "type": "main", "index": 0 }]]
+    },
+    "Pick Best Topic": {
+      "main": [[{ "node": "Generate LinkedIn Post", "type": "main", "index": 0 }]]
+    },
+    "Generate LinkedIn Post": {
+      "main": [[{ "node": "Was it a Duplicate?", "type": "main", "index": 0 }]]
+    },
+    "Was it a Duplicate?": {
+      "main": [
+        [{ "node": "Log to Google Sheet", "type": "main", "index": 0 }],
+        [{ "node": "Skip — Already Used Topic", "type": "main", "index": 0 }]
+      ]
+    },
+    "Log to Google Sheet": {
+      "main": [[{ "node": "Send to Telegram for Approval", "type": "main", "index": 0 }]]
+    },
+    "Approval Webhook (Telegram)": {
+      "main": [[{ "node": "Parse Approve/Reject Command", "type": "main", "index": 0 }]]
+    },
+    "Parse Approve/Reject Command": {
+      "main": [[{ "node": "Is Valid Command?", "type": "main", "index": 0 }]]
+    },
+    "Is Valid Command?": {
+      "main": [
+        [{ "node": "Call Approve Endpoint", "type": "main", "index": 0 }],
+        []
+      ]
+    },
+    "Call Approve Endpoint": {
+      "main": [[{ "node": "Is Approved?", "type": "main", "index": 0 }]]
+    },
+    "Is Approved?": {
+      "main": [
+        [{ "node": "Post to LinkedIn", "type": "main", "index": 0 }],
+        [{ "node": "Notify Rejection", "type": "main", "index": 0 }]
+      ]
+    },
+    "Post to LinkedIn": {
+      "main": [[{ "node": "Confirm Post on Telegram", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "staticData": null,
+  "tags": ["linkedin", "ai", "automation"]
+}
